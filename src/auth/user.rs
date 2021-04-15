@@ -16,15 +16,25 @@ pub trait UserDetail: Send + Sync + Display + Debug {
     fn account_enabled(&self) -> bool {
         true
     }
+
+    /// 增加获取用户名功能
+    fn get_username(&self) -> String;
 }
 
 /// DefaultUser is a default implementation of the `UserDetail` trait that doesn't hold any user
 /// information. Having a default implementation like this allows for quicker prototyping with
 /// libunftp because otherwise the library user would have to implement the `UserDetail` trait first.
 #[derive(Debug, PartialEq)]
-pub struct DefaultUser;
+pub struct DefaultUser{
+    /// usernmae 用户名
+    pub username: String,
+}
 
-impl UserDetail for DefaultUser {}
+impl UserDetail for DefaultUser {
+    fn get_username(&self) -> String {
+        String::from(&self.username)
+    }
+}
 
 impl Display for DefaultUser {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {

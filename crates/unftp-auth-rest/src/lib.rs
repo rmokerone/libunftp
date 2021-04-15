@@ -157,9 +157,11 @@ impl Authenticator<DefaultUser> for RestAuthenticator {
             Some(parsed) => parsed.to_string(),
             None => json!(null).to_string(),
         };
+        
 
         if regex.is_match(&parsed) {
-            Ok(DefaultUser {})
+            println!("username = {:?}", username);
+            Ok(DefaultUser {username: username.to_owned()})
         } else {
             Err(AuthenticationError::BadPassword)
         }
