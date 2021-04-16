@@ -2,7 +2,9 @@
 
 mod ext;
 pub use ext::ServerExt;
-use libunftp::auth::{DefaultUser, UserDetail};
+use std::fs;
+
+use libunftp::auth::UserDetail;
 use async_trait::async_trait;
 use futures::prelude::*;
 use libunftp::storage::{Error, ErrorKind, Fileinfo, Metadata, Result, StorageBackend};
@@ -48,6 +50,64 @@ impl Filesystem {
         }
     }
 
+
+    
+    fn check_daily_folder<P: AsRef<Path>, U: UserDetail>(&self,  _path: P, _user: &Option<U>) -> Result<String> {
+        println!("in check_daily_folder path {:?}", _path.as_ref());
+
+        let path = _path.as_ref();
+        let file_stem = path.file_stem();
+        println!("file_stem {:?}", file_stem);
+        let dailyname = match file_stem {
+            Some(stem) => {
+                match stem.to_str() {
+                    Some(name) => {
+                        let times: Vec<&str> = name.split('-').collect();
+                        // 检查各个字段是否有问题
+                        times[..=2].join("-")
+                    },
+                    None => "".to_owned()
+                }
+            }, 
+            None => "".to_owned()
+        };
+        println!("in daily name = {:?}", dailyname);
+
+        if dailyname == ""{
+            return Err(Error::from(ErrorKind::PermanentFileNotAvailable));
+        }
+
+        // 开始检查文件夹是否存在
+        let mut fakeroot = self.root.to_path_buf();
+
+        match _user {
+            Some(u) => {
+                let id = u.get_username();
+                match id.strip_prefix("device_") {
+                    Some(_) => { 
+                        fakeroot.push(id); 
+                        fakeroot.push(&dailyname);
+                        println!("in daily fakeroot {:?}", fakeroot);
+
+                        // 开始创建文件夹
+                        match fs::create_dir_all(&fakeroot) {
+                            Ok(_r) => {
+                                println!("文件夹创建成功");
+                                Ok(dailyname)
+                            },
+                            Err(e) => {
+                                println!("文件创建失败{:?}", e);
+                                Err(Error::from(ErrorKind::PermanentFileNotAvailable))
+                            }
+                        }
+                    }
+                    None => Err(Error::from(ErrorKind::PermanentFileNotAvailable))
+                }
+            }
+            None => Err(Error::from(ErrorKind::PermanentFileNotAvailable))
+        }
+    }
+
     /// Returns the full, absolute and canonical path corresponding to the (relative to FTP root)
     /// input path, resolving symlinks and sequences like '../'.
     async fn full_path<P: AsRef<Path>, U: UserDetail>(&self, path: P, user: &Option<U>) -> Result<PathBuf> {
@@ -88,9 +148,51 @@ impl Filesystem {
         }
     }
 
-    pub fn printtest(&self, user: &DefaultUser) {
-        println!("in printest user {:?}", user);
+
+        /// Returns the full, absolute and canonical path corresponding to the (relative to FTP root)
+    /// input path, resolving symlinks and sequences like '../'.
+    async fn full_path_with_daily<P: AsRef<Path>, U: UserDetail>(&self, path: P, user: &Option<U>, daily: &str) -> Result<PathBuf> {
+        // `path.join(other_path)` replaces `path` with `other_path` if `other_path` is absolute,
+        // so we have to check for it.
+        let path = path.as_ref();
+
+        println!("_user {:?}", user);
+
+        let mut fakeroot = self.root.to_path_buf();
+        match user {
+            Some(u) => {
+                let id = u.get_username();
+                match id.strip_prefix("device_") {
+                    Some(_) => { 
+                        fakeroot.push(id); 
+                        fakeroot.push(daily);
+                    }
+                    None => ()
+                }
+            }
+            None => ()
+        }
+        println!("fakeroot {:?}", fakeroot);
+
+    
+        let full_path = if path.starts_with("/") {
+            fakeroot.join(path.strip_prefix("/").unwrap())
+        } else {
+            fakeroot.join(path)
+        };
+
+        let real_full_path = tokio::task::spawn_blocking(move || canonicalize(full_path))
+            .await
+            .map_err(|e| Error::new(ErrorKind::LocalError, e))??;
+
+        if real_full_path.starts_with(&fakeroot) {
+            Ok(real_full_path)
+        } else {
+            Err(Error::from(ErrorKind::PermanentFileNotAvailable))
+        }
     }
+
+
 }
 
 #[async_trait]
@@ -118,10 +220,9 @@ impl<U: Send + Sync + Debug + UserDetail> StorageBackend<U> for Filesystem {
         P: AsRef<Path> + Send + Debug,
         <Self as StorageBackend<U>>::Metadata: Metadata,
     {
+
         let full_path: PathBuf = self.full_path(path, _user).await?;
-
-
-
+        
 
         let prefix: PathBuf = self.root.clone();
 
@@ -174,7 +275,13 @@ impl<U: Send + Sync + Debug + UserDetail> StorageBackend<U> for Filesystem {
         use tokio::io::AsyncSeekExt;
         // TODO: Add permission checks
 
-        let full_path = self.full_path(path, _user).await?;
+        println!("in put path: {:?}", path.as_ref());
+
+        let dailyname = self.check_daily_folder(&path, &_user)?;
+        println!("in put dailyname = {:?}", &dailyname);
+
+        let full_path = self.full_path_with_daily(path, _user, &dailyname).await?;
+        println!("in put full_path = {:?}", &full_path);
 
         let mut file = tokio::fs::OpenOptions::new().write(true).create(true).open(full_path).await?;
         file.set_len(start_pos).await?;
